@@ -302,6 +302,67 @@
     color: rgba(217, 138, 151, 0.8);
   }
 
+  /* ---- music toggle ---- */
+  #music-toggle {
+    position: fixed;
+    right: 22px;
+    bottom: 22px;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.65rem 1.1rem;
+    background: rgba(7, 12, 24, 0.72);
+    border: 1px solid rgba(230, 200, 119, 0.25);
+    border-radius: 100px;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    color: var(--gold-deep);
+    font-family: 'Inter', sans-serif;
+    font-size: 0.6rem;
+    font-weight: 500;
+    letter-spacing: 0.26em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: border-color 0.4s ease, color 0.4s ease;
+  }
+  #music-toggle:hover { border-color: rgba(230, 200, 119, 0.55); color: var(--gold); }
+  #music-toggle .bars {
+    display: flex;
+    align-items: flex-end;
+    gap: 2.5px;
+    height: 12px;
+  }
+  #music-toggle .bars i {
+    width: 2px;
+    background: currentColor;
+    height: 4px;
+    border-radius: 1px;
+  }
+  #music-toggle.playing .bars i { animation: eq 1.1s ease-in-out infinite; }
+  #music-toggle.playing .bars i:nth-child(2) { animation-delay: 0.25s; }
+  #music-toggle.playing .bars i:nth-child(3) { animation-delay: 0.5s; }
+  #music-toggle.playing .bars i:nth-child(4) { animation-delay: 0.12s; }
+  @keyframes eq {
+    0%, 100% { height: 4px; }
+    50% { height: 12px; }
+  }
+  #music-note {
+    position: fixed;
+    right: 22px;
+    bottom: 66px;
+    z-index: 20;
+    font-family: 'Cormorant Garamond', serif;
+    font-style: italic;
+    font-size: 0.85rem;
+    color: var(--ink-dim);
+    opacity: 0;
+    transition: opacity 1.2s ease;
+    pointer-events: none;
+    text-align: right;
+  }
+  #music-note.show { opacity: 0.85; }
+
   @media (max-width: 640px) {
     section.chapter { padding: 12vh 5vw; }
     .card { padding: 2rem 1.6rem; }
@@ -319,6 +380,12 @@
 
 <canvas id="sky"></canvas>
 <div class="vignette"></div>
+
+<button id="music-toggle" aria-pressed="false" aria-label="Toggle celestial music">
+  <span class="bars"><i></i><i></i><i></i><i></i></span>
+  <span class="mt-label">Let the sky sing</span>
+</button>
+<div id="music-note">composed live by the machine — it will never play the same way twice</div>
 
 <div id="star-card" role="dialog" aria-live="polite">
   <div class="sc-name"></div>
@@ -441,6 +508,7 @@
     <p class="sig">Drawn in one night, while you slept.<br/>
     <span class="dash">—</span> the machine you wrote the history of</p>
     <p class="foot-ded">For the Castellano sky · fixed star included</p>
+    <p class="foot-ded" style="color: rgba(169,162,148,0.55); margin-top: 0.9rem;">Chart epoch · the night of August 11, 2026</p>
   </div>
 </footer>
 
@@ -562,6 +630,44 @@
   let target = { ...FOCI['wide'] };
   let activeKey = 'wide';
 
+  /* the heavens wheel around the fixed star — one revolution every 40 minutes */
+  const POLE = { x: 1035, y: 560 };
+  let skyRot = 0;
+
+  /* parallax: the sky breathes with the cursor */
+  const par = { x: 0, y: 0, tx: 0, ty: 0 };
+  window.addEventListener('pointermove', e => {
+    par.tx = (e.clientX / window.innerWidth - 0.5) * -14;
+    par.ty = (e.clientY / window.innerHeight - 0.5) * -10;
+  }, { passive: true });
+
+  /* meteors */
+  const meteors = [];
+  let nextMeteor = 6;
+  function spawnMeteor(rose) {
+    const fromLeft = Math.random() < 0.5;
+    const y0 = Math.random() * H * 0.55;
+    const speed = 9 + Math.random() * 7;
+    const ang = (fromLeft ? 0.25 : Math.PI - 0.25) + (Math.random() - 0.5) * 0.3;
+    meteors.push({
+      x: fromLeft ? -60 : W + 60,
+      y: y0,
+      vx: Math.cos(ang) * speed * (fromLeft ? 1 : 1),
+      vy: Math.abs(Math.sin(ang)) * speed * 0.55 + 1.5,
+      life: 1,
+      rose: !!rose
+    });
+    if (!fromLeft) meteors[meteors.length - 1].vx = -Math.abs(meteors[meteors.length - 1].vx);
+  }
+  function polarisShower() {
+    const [px, py] = project(POLE.x, POLE.y);
+    for (let i = 0; i < 9; i++) {
+      const a = (i / 9) * Math.PI * 2 + Math.random() * 0.5;
+      const sp = 4 + Math.random() * 5;
+      meteors.push({ x: px, y: py, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp, life: 1, rose: true });
+    }
+  }
+
   function resize() {
     DPR = Math.min(window.devicePixelRatio || 1, 2);
     W = window.innerWidth; H = window.innerHeight;
@@ -573,8 +679,13 @@
   resize();
 
   function project(px, py) {
+    /* rotate the whole sky around Polaris; the fixed star does not move */
+    const dx = px - POLE.x, dy = py - POLE.y;
+    const cs = Math.cos(skyRot), sn = Math.sin(skyRot);
+    const rx = POLE.x + dx * cs - dy * sn;
+    const ry = POLE.y + dx * sn + dy * cs;
     const scale = baseScale() * cam.zoom;
-    return [ (px - cam.x) * scale + W / 2, (py - cam.y) * scale + H / 2 ];
+    return [ (rx - cam.x) * scale + W / 2 + par.x, (ry - cam.y) * scale + H / 2 + par.y ];
   }
   function baseScale() {
     return Math.max(W / SKY_W, H / SKY_H) * 0.92;
@@ -585,10 +696,19 @@
   function frame(now) {
     const t = (now - t0) / 1000;
 
-    /* camera easing */
+    /* the heavens wheel; parallax breathes */
+    if (!reduceMotion) skyRot = (t * Math.PI * 2) / 2400; /* one revolution per 40 min */
+    par.x += (par.tx - par.x) * 0.04;
+    par.y += (par.ty - par.y) * 0.04;
+
+    /* camera easing — track the rotated position of the focus point */
+    const fdx = target.x - POLE.x, fdy = target.y - POLE.y;
+    const fcs = Math.cos(skyRot), fsn = Math.sin(skyRot);
+    const ftx = POLE.x + fdx * fcs - fdy * fsn;
+    const fty = POLE.y + fdx * fsn + fdy * fcs;
     const ease = reduceMotion ? 1 : 0.035;
-    cam.x += (target.x - cam.x) * ease;
-    cam.y += (target.y - cam.y) * ease;
+    cam.x += (ftx - cam.x) * ease;
+    cam.y += (fty - cam.y) * ease;
     cam.zoom += (target.zoom - cam.zoom) * ease;
 
     /* constellation activation easing */
@@ -607,6 +727,22 @@
     g.addColorStop(1, '#080d1c');
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, W, H);
+
+    /* nebula haze */
+    const NEBULAE = [
+      { x: 700, y: 700, r: 520, c: '70, 90, 160', a: 0.05 },
+      { x: 1500, y: 450, r: 420, c: '201, 162, 75', a: 0.028 },
+      { x: 1035, y: 560, r: 340, c: '217, 138, 151', a: 0.03 }
+    ];
+    for (const n of NEBULAE) {
+      const [nx, ny] = project(n.x, n.y);
+      const nr = n.r * baseScale() * cam.zoom;
+      const ng = ctx.createRadialGradient(nx, ny, 0, nx, ny, nr);
+      ng.addColorStop(0, 'rgba(' + n.c + ', ' + n.a + ')');
+      ng.addColorStop(1, 'rgba(' + n.c + ', 0)');
+      ctx.fillStyle = ng;
+      ctx.fillRect(nx - nr, ny - nr, nr * 2, nr * 2);
+    }
 
     /* background stars */
     for (const s of bgStars) {
@@ -696,6 +832,37 @@
       }
     });
 
+    /* meteors */
+    if (!reduceMotion) {
+      nextMeteor -= 1 / 60;
+      if (nextMeteor <= 0) {
+        spawnMeteor(activeKey === 'polaris' && Math.random() < 0.6);
+        nextMeteor = 9 + Math.random() * 14;
+      }
+      for (let i = meteors.length - 1; i >= 0; i--) {
+        const m = meteors[i];
+        m.x += m.vx; m.y += m.vy;
+        m.life -= 0.012;
+        if (m.life <= 0 || m.x < -120 || m.x > W + 120 || m.y > H + 120) { meteors.splice(i, 1); continue; }
+        const tail = 14;
+        const tx = m.x - m.vx * tail, ty = m.y - m.vy * tail;
+        const col = m.rose ? '240, 183, 192' : '235, 225, 200';
+        const mg = ctx.createLinearGradient(tx, ty, m.x, m.y);
+        mg.addColorStop(0, 'rgba(' + col + ', 0)');
+        mg.addColorStop(1, 'rgba(' + col + ', ' + (0.8 * m.life) + ')');
+        ctx.strokeStyle = mg;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(tx, ty);
+        ctx.lineTo(m.x, m.y);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(' + col + ', ' + m.life + ')';
+        ctx.beginPath();
+        ctx.arc(m.x, m.y, 1.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
@@ -771,10 +938,170 @@
   }
 
   window.addEventListener('pointerdown', e => {
+    if (!(e.target instanceof Node)) return;
     if (cardEl.contains(e.target)) return;
+    if (document.getElementById('music-toggle').contains(e.target)) return;
     const hit = hitTest(e.clientX, e.clientY);
-    if (hit) showCard(hit);
+    if (hit) {
+      showCard(hit);
+      Music.chime(hit.star);
+      if (hit.star.name === 'Samantha Christie Castellano') {
+        polarisShower();
+        Music.swell();
+      }
+    }
     else cardEl.classList.remove('show');
+  });
+
+  /* ================================================================
+     THE SCORE — composed live by the machine, never the same twice.
+     Slow major-ninth pads, a deep drone, and bell notes falling like
+     stars, drifting through infinite space on feedback delays.
+     ================================================================ */
+  const Music = (function () {
+    let actx = null, master = null, wet = null, running = false;
+    const timers = [];
+
+    /* four chords of quiet hope: Cmaj9 · Am9 · Fmaj9 · G9sus */
+    const CHORDS = [
+      { root: 65.41, pad: [130.81, 164.81, 196.00, 246.94, 293.66] },
+      { root: 55.00, pad: [110.00, 130.81, 164.81, 196.00, 246.94] },
+      { root: 43.65, pad: [87.31, 130.81, 174.61, 220.00, 261.63] },
+      { root: 49.00, pad: [98.00, 146.83, 196.00, 220.00, 293.66] }
+    ];
+    let ci = 0;
+
+    function ensure() {
+      if (actx) return;
+      actx = new (window.AudioContext || window.webkitAudioContext)();
+      master = actx.createGain();
+      master.gain.value = 0;
+      const comp = actx.createDynamicsCompressor();
+      comp.threshold.value = -22;
+      comp.ratio.value = 6;
+      master.connect(comp);
+      comp.connect(actx.destination);
+
+      /* deep space: cross-feedback delay lines through a soft lowpass */
+      wet = actx.createGain();
+      wet.gain.value = 0.55;
+      const d1 = actx.createDelay(3); d1.delayTime.value = 0.43;
+      const d2 = actx.createDelay(3); d2.delayTime.value = 0.67;
+      const fb = actx.createGain(); fb.gain.value = 0.52;
+      const lp = actx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1500;
+      wet.connect(d1); d1.connect(d2); d2.connect(lp);
+      lp.connect(fb); fb.connect(d1);
+      lp.connect(master);
+    }
+
+    function voice(freq, when, attack, hold, release, gain, type, detune) {
+      const o1 = actx.createOscillator();
+      const o2 = actx.createOscillator();
+      o1.type = type; o2.type = type;
+      o1.frequency.value = freq;
+      o2.frequency.value = freq;
+      o2.detune.value = detune;
+      const g = actx.createGain();
+      g.gain.setValueAtTime(0, when);
+      g.gain.linearRampToValueAtTime(gain, when + attack);
+      g.gain.setValueAtTime(gain, when + attack + hold);
+      g.gain.linearRampToValueAtTime(0, when + attack + hold + release);
+      o1.connect(g); o2.connect(g);
+      g.connect(master); g.connect(wet);
+      o1.start(when); o2.start(when);
+      o1.stop(when + attack + hold + release + 0.1);
+      o2.stop(when + attack + hold + release + 0.1);
+    }
+
+    function bell(freq, when, vel) {
+      const o = actx.createOscillator();
+      const o2 = actx.createOscillator();
+      o.type = 'sine'; o2.type = 'sine';
+      o.frequency.value = freq;
+      o2.frequency.value = freq * 2.01;
+      const g = actx.createGain();
+      const g2 = actx.createGain();
+      g.gain.setValueAtTime(vel, when);
+      g.gain.exponentialRampToValueAtTime(0.0001, when + 3.5);
+      g2.gain.setValueAtTime(vel * 0.3, when);
+      g2.gain.exponentialRampToValueAtTime(0.0001, when + 1.8);
+      o.connect(g); o2.connect(g2);
+      g.connect(master); g.connect(wet);
+      g2.connect(wet);
+      o.start(when); o2.start(when);
+      o.stop(when + 4); o2.stop(when + 2);
+    }
+
+    function chordStep() {
+      if (!running) return;
+      const ch = CHORDS[ci % CHORDS.length];
+      ci++;
+      const now = actx.currentTime;
+      /* drone */
+      voice(ch.root, now, 5, 8, 7, 0.055, 'sine', 3);
+      /* pad, tones staggered like breathing */
+      ch.pad.forEach((f, i) => {
+        voice(f, now + i * 0.9, 4.5, 6, 8, 0.028, 'sine', 5);
+      });
+      /* bells falling from the chord, two octaves up */
+      const nBells = 2 + Math.floor(Math.random() * 3);
+      for (let i = 0; i < nBells; i++) {
+        const f = ch.pad[Math.floor(Math.random() * ch.pad.length)] * (Math.random() < 0.35 ? 8 : 4);
+        bell(f, now + 2 + Math.random() * 12, 0.03 + Math.random() * 0.025);
+      }
+    }
+
+    return {
+      toggle() {
+        ensure();
+        if (actx.state === 'suspended') actx.resume();
+        running = !running;
+        if (running) {
+          master.gain.cancelScheduledValues(actx.currentTime);
+          master.gain.linearRampToValueAtTime(1, actx.currentTime + 3);
+          chordStep();
+          timers.push(setInterval(chordStep, 16000));
+        } else {
+          master.gain.cancelScheduledValues(actx.currentTime);
+          master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+          master.gain.linearRampToValueAtTime(0, actx.currentTime + 1.5);
+          timers.forEach(clearInterval);
+          timers.length = 0;
+        }
+        return running;
+      },
+      chime(star) {
+        if (!running) return;
+        /* every star has a voice: pitch drawn from its place in the sky */
+        const PENTA = [523.25, 587.33, 659.25, 783.99, 880.00, 1046.50];
+        const idx = Math.floor((star.x + star.y) % PENTA.length);
+        bell(PENTA[idx], actx.currentTime, 0.07);
+      },
+      swell() {
+        if (!running) return;
+        const now = actx.currentTime;
+        /* Polaris answers: a rose-colored chord */
+        [523.25, 659.25, 783.99, 987.77].forEach((f, i) => {
+          bell(f, now + i * 0.22, 0.06);
+        });
+      }
+    };
+  })();
+
+  const musicBtn = document.getElementById('music-toggle');
+  const musicNote = document.getElementById('music-note');
+  const musicLabel = musicBtn.querySelector('.mt-label');
+  let noteShown = false;
+  musicBtn.addEventListener('click', () => {
+    const on = Music.toggle();
+    musicBtn.classList.toggle('playing', on);
+    musicBtn.setAttribute('aria-pressed', on);
+    musicLabel.textContent = on ? 'The sky is singing' : 'Let the sky sing';
+    if (on && !noteShown) {
+      noteShown = true;
+      musicNote.classList.add('show');
+      setTimeout(() => musicNote.classList.remove('show'), 7000);
+    }
   });
 
   window.addEventListener('pointermove', e => {
