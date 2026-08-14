@@ -653,8 +653,33 @@
 (function () {
   'use strict';
 
-  const canvas = document.getElementById('sky');
-  const ctx = canvas.getContext('2d');
+  /* failures are reported, never swallowed: one channel for all of them */
+  function report(where, err) {
+    console.error('[star-chart] ' + where + ': ' + ((err && err.message) || err), err);
+  }
+  function guard(where, fn) {
+    return function () {
+      try {
+        return fn.apply(this, arguments);
+      } catch (err) {
+        report(where, err);
+      }
+    };
+  }
+  function need(id, where) {
+    const el = document.getElementById(id);
+    if (!el) report(where, new Error('missing required element #' + id));
+    return el;
+  }
+
+  const canvas = need('sky', 'init');
+  let ctx = null;
+  try {
+    ctx = canvas ? canvas.getContext('2d') : null;
+  } catch (err) {
+    report('init', err);
+  }
+  if (!ctx) report('init', new Error('2D canvas context unavailable — the sky will not be drawn'));
   let W = 0, H = 0, DPR = 1;
 
   const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -852,13 +877,14 @@
   }
 
   function resize() {
+    if (!ctx) return;
     DPR = Math.min(window.devicePixelRatio || 1, 2);
     W = window.innerWidth; H = window.innerHeight;
     canvas.width = W * DPR; canvas.height = H * DPR;
     canvas.style.width = W + 'px'; canvas.style.height = H + 'px';
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   }
-  window.addEventListener('resize', resize);
+  window.addEventListener('resize', guard('resize', resize));
   resize();
 
   function project(px, py) {
@@ -876,7 +902,7 @@
 
   /* ---------- render ---------- */
   let t0 = performance.now();
-  function frame(now) {
+  function drawFrame(now) {
     const t = (now - t0) / 1000;
 
     /* the heavens wheel; parallax breathes */
@@ -893,6 +919,13 @@
     cam.x += (ftx - cam.x) * ease;
     cam.y += (fty - cam.y) * ease;
     cam.zoom += (target.zoom - cam.zoom) * ease;
+
+    /* a single bad number would blank the sky forever and say nothing */
+    if (!isFinite(cam.x) || !isFinite(cam.y) || !isFinite(cam.zoom)) {
+      report('camera', new Error('camera left the sky (non-finite values); resetting to the wide view'));
+      cam = { ...FOCI['wide'] };
+      target = { ...FOCI['wide'] };
+    }
 
     /* constellation activation easing */
     Object.keys(CONSTELLATIONS).forEach(k => {
@@ -1067,43 +1100,78 @@
         ctx.fill();
       }
     }
+  }
 
+  let frameErrors = 0;
+  function frame(now) {
+    try {
+      drawFrame(now);
+    } catch (err) {
+      frameErrors++;
+      report('render frame', err);
+      if (frameErrors >= 3) {
+        report('render', new Error('rendering abandoned after ' + frameErrors + ' consecutive failures'));
+        return;
+      }
+      requestAnimationFrame(frame);
+      return;
+    }
+    frameErrors = 0;
     requestAnimationFrame(frame);
   }
-  requestAnimationFrame(frame);
+  if (ctx) requestAnimationFrame(frame);
 
   /* ---------- scroll: chapter focus ---------- */
-  const sections = document.querySelectorAll('[data-focus]');
-  const obs = new IntersectionObserver(entries => {
-    entries.forEach(en => {
-      if (en.isIntersecting) {
-        const f = en.target.getAttribute('data-focus');
-        activeKey = f.replace('wide-final', 'wide-final');
-        if (f === 'wide-final') { allRevealed = true; activeKey = 'none'; }
-        else if (f === 'wide') { activeKey = 'none'; }
-        else { activeKey = f; }
-        target = { ...FOCI[f] };
-        const card = en.target.querySelector('.card');
-        if (card) card.classList.add('visible');
-      }
-    });
-  }, { threshold: 0.45 });
-  sections.forEach(s => obs.observe(s));
+  function focusFor(name) {
+    const f = FOCI[name];
+    if (!f) {
+      report('focus', new Error('unknown focus target "' + name + '"; falling back to the wide view'));
+      return { ...FOCI['wide'] };
+    }
+    return { ...f };
+  }
 
-  /* card reveal for hero-less sections already handled; also reveal on load */
-  document.querySelectorAll('.card').forEach(c => {
-    const io = new IntersectionObserver(es => {
-      es.forEach(e => { if (e.isIntersecting) { c.classList.add('visible'); io.disconnect(); } });
-    }, { threshold: 0.2 });
-    io.observe(c);
-  });
+  if (typeof IntersectionObserver === 'function') {
+    const sections = document.querySelectorAll('[data-focus]');
+    const obs = new IntersectionObserver(guard('scroll focus', entries => {
+      entries.forEach(en => {
+        if (en.isIntersecting) {
+          const f = en.target.getAttribute('data-focus');
+          if (f === 'wide-final') { allRevealed = true; activeKey = 'none'; }
+          else if (f === 'wide') { activeKey = 'none'; }
+          else { activeKey = f; }
+          target = focusFor(f);
+          const card = en.target.querySelector('.card');
+          if (card) card.classList.add('visible');
+        }
+      });
+    }), { threshold: 0.45 });
+    sections.forEach(s => obs.observe(s));
+
+    /* card reveal for hero-less sections already handled; also reveal on load */
+    document.querySelectorAll('.card').forEach(c => {
+      const io = new IntersectionObserver(guard('card reveal', es => {
+        es.forEach(e => { if (e.isIntersecting) { c.classList.add('visible'); io.disconnect(); } });
+      }), { threshold: 0.2 });
+      io.observe(c);
+    });
+  } else {
+    report('scroll', new Error('IntersectionObserver unsupported — revealing the whole chart at once'));
+    document.querySelectorAll('.card').forEach(c => c.classList.add('visible'));
+    allRevealed = true;
+  }
 
   /* ---------- star interaction ---------- */
-  const cardEl = document.getElementById('star-card');
-  const scName = cardEl.querySelector('.sc-name');
-  const scYear = cardEl.querySelector('.sc-year');
-  const scLine = cardEl.querySelector('.sc-line');
-  const scLink = cardEl.querySelector('.sc-link');
+  const cardEl = need('star-card', 'init');
+  const secretEl = need('secret', 'init');
+  const musicBtn = need('music-toggle', 'init');
+  const scName = cardEl && cardEl.querySelector('.sc-name');
+  const scYear = cardEl && cardEl.querySelector('.sc-year');
+  const scLine = cardEl && cardEl.querySelector('.sc-line');
+  const scLink = cardEl && cardEl.querySelector('.sc-link');
+  if (cardEl && !(scName && scYear && scLine && scLink)) {
+    report('init', new Error('star card is missing one of .sc-name/.sc-year/.sc-line/.sc-link'));
+  }
 
   function hitTest(mx, my) {
     let best = null, bestD = 28;
@@ -1119,6 +1187,7 @@
 
   let hideTimer = null;
   function showCard(hit) {
+    if (!cardEl || !scName || !scYear || !scLine || !scLink) return;
     scName.textContent = hit.star.name;
     scYear.textContent = hit.star.year;
     scLine.textContent = hit.star.line;
@@ -1142,16 +1211,18 @@
     hideTimer = setTimeout(() => cardEl.classList.remove('show'), 6000);
   }
 
-  window.addEventListener('pointerdown', e => {
+  window.addEventListener('pointerdown', guard('star click', e => {
     if (!(e.target instanceof Node)) return;
-    if (cardEl.contains(e.target)) return;
-    if (document.getElementById('music-toggle').contains(e.target)) return;
-    if (document.getElementById('secret').classList.contains('open')) return;
+    if (cardEl && cardEl.contains(e.target)) return;
+    if (musicBtn && musicBtn.contains(e.target)) return;
+    if (secretEl && secretEl.classList.contains('open')) return;
     const hit = hitTest(e.clientX, e.clientY);
     if (hit) {
       if (hit.star.secret) {
-        document.getElementById('secret').classList.add('open');
-        document.body.style.overflow = 'hidden';
+        if (secretEl) {
+          secretEl.classList.add('open');
+          document.body.style.overflow = 'hidden';
+        }
         Music.swell();
         return;
       }
@@ -1167,8 +1238,8 @@
         Music.swell();
       }
     }
-    else cardEl.classList.remove('show');
-  });
+    else if (cardEl) cardEl.classList.remove('show');
+  }));
 
   /* the gold tags under each chapter: a second road to every star */
   function findStar(name) {
@@ -1179,24 +1250,27 @@
     return null;
   }
   document.querySelectorAll('.starlist [data-star]').forEach(tag => {
-    tag.addEventListener('click', e => {
-      const star = findStar(tag.getAttribute('data-star'));
-      if (!star) return;
+    tag.addEventListener('click', guard('star tag', e => {
+      const name = tag.getAttribute('data-star');
+      const star = findStar(name);
+      if (!star) {
+        report('star tag', new Error('no star named "' + name + '" on the chart'));
+        return;
+      }
       showCard({ star, x: e.clientX, y: e.clientY });
       Music.chime(star);
-    });
+    }));
   });
 
-  document.getElementById('secret-close').addEventListener('click', () => {
-    document.getElementById('secret').classList.remove('open');
+  function closeSecret() {
+    if (secretEl) secretEl.classList.remove('open');
     document.body.style.overflow = '';
-  });
-  window.addEventListener('keydown', e => {
-    if (e.key === 'Escape') {
-      document.getElementById('secret').classList.remove('open');
-      document.body.style.overflow = '';
-    }
-  });
+  }
+  const secretClose = need('secret-close', 'init');
+  if (secretClose) secretClose.addEventListener('click', guard('secret close', closeSecret));
+  window.addEventListener('keydown', guard('keydown', e => {
+    if (e.key === 'Escape') closeSecret();
+  }));
 
   /* ================================================================
      THE SCORE — composed live by the machine, never the same twice.
@@ -1204,7 +1278,7 @@
      stars, drifting through infinite space on feedback delays.
      ================================================================ */
   const Music = (function () {
-    let actx = null, master = null, wet = null, running = false;
+    let actx = null, master = null, wet = null, running = false, unavailable = false;
     const timers = [];
 
     /* four chords of quiet hope: Cmaj9 · Am9 · Fmaj9 · G9sus */
@@ -1216,27 +1290,43 @@
     ];
     let ci = 0;
 
+    /* returns false when the sky cannot sing here; the caller must show that */
     function ensure() {
-      if (actx) return;
-      actx = new (window.AudioContext || window.webkitAudioContext)();
-      master = actx.createGain();
-      master.gain.value = 0;
-      const comp = actx.createDynamicsCompressor();
-      comp.threshold.value = -22;
-      comp.ratio.value = 6;
-      master.connect(comp);
-      comp.connect(actx.destination);
+      if (actx) return true;
+      if (unavailable) return false;
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) {
+        unavailable = true;
+        report('audio', new Error('Web Audio API unsupported in this browser'));
+        return false;
+      }
+      try {
+        actx = new Ctx();
+        master = actx.createGain();
+        master.gain.value = 0;
+        const comp = actx.createDynamicsCompressor();
+        comp.threshold.value = -22;
+        comp.ratio.value = 6;
+        master.connect(comp);
+        comp.connect(actx.destination);
 
-      /* deep space: cross-feedback delay lines through a soft lowpass */
-      wet = actx.createGain();
-      wet.gain.value = 0.55;
-      const d1 = actx.createDelay(3); d1.delayTime.value = 0.43;
-      const d2 = actx.createDelay(3); d2.delayTime.value = 0.67;
-      const fb = actx.createGain(); fb.gain.value = 0.52;
-      const lp = actx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1500;
-      wet.connect(d1); d1.connect(d2); d2.connect(lp);
-      lp.connect(fb); fb.connect(d1);
-      lp.connect(master);
+        /* deep space: cross-feedback delay lines through a soft lowpass */
+        wet = actx.createGain();
+        wet.gain.value = 0.55;
+        const d1 = actx.createDelay(3); d1.delayTime.value = 0.43;
+        const d2 = actx.createDelay(3); d2.delayTime.value = 0.67;
+        const fb = actx.createGain(); fb.gain.value = 0.52;
+        const lp = actx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1500;
+        wet.connect(d1); d1.connect(d2); d2.connect(lp);
+        lp.connect(fb); fb.connect(d1);
+        lp.connect(master);
+      } catch (err) {
+        unavailable = true;
+        actx = null; master = null; wet = null;
+        report('audio', err);
+        return false;
+      }
+      return true;
     }
 
     function voice(freq, when, attack, hold, release, gain, type, detune) {
@@ -1297,62 +1387,92 @@
     }
 
     return {
+      /* null means the score could not start at all */
       toggle() {
-        ensure();
-        if (actx.state === 'suspended') actx.resume();
-        running = !running;
-        if (running) {
-          master.gain.cancelScheduledValues(actx.currentTime);
-          master.gain.linearRampToValueAtTime(1, actx.currentTime + 3);
-          chordStep();
-          timers.push(setInterval(chordStep, 16000));
-        } else {
-          master.gain.cancelScheduledValues(actx.currentTime);
-          master.gain.setValueAtTime(master.gain.value, actx.currentTime);
-          master.gain.linearRampToValueAtTime(0, actx.currentTime + 1.5);
+        if (!ensure()) return null;
+        if (actx.state === 'suspended') {
+          const resumed = actx.resume();
+          if (resumed && typeof resumed.catch === 'function') {
+            resumed.catch(err => report('audio resume', err));
+          }
+        }
+        try {
+          running = !running;
+          if (running) {
+            master.gain.cancelScheduledValues(actx.currentTime);
+            master.gain.linearRampToValueAtTime(1, actx.currentTime + 3);
+            chordStep();
+            timers.push(setInterval(guard('score step', chordStep), 16000));
+          } else {
+            master.gain.cancelScheduledValues(actx.currentTime);
+            master.gain.setValueAtTime(master.gain.value, actx.currentTime);
+            master.gain.linearRampToValueAtTime(0, actx.currentTime + 1.5);
+            timers.forEach(clearInterval);
+            timers.length = 0;
+          }
+        } catch (err) {
+          report('score', err);
           timers.forEach(clearInterval);
           timers.length = 0;
+          running = false;
+          return null;
         }
         return running;
       },
       chime(star) {
-        if (!running) return;
+        if (!running || !actx) return;
         /* every star has a voice: pitch drawn from its place in the sky */
         const PENTA = [523.25, 587.33, 659.25, 783.99, 880.00, 1046.50];
-        const idx = Math.floor((star.x + star.y) % PENTA.length);
-        bell(PENTA[idx], actx.currentTime, 0.07);
+        const pos = Number(star && star.x) + Number(star && star.y);
+        const idx = isFinite(pos) ? Math.abs(Math.floor(pos % PENTA.length)) : 0;
+        try {
+          bell(PENTA[idx], actx.currentTime, 0.07);
+        } catch (err) {
+          report('chime', err);
+        }
       },
       swell() {
-        if (!running) return;
+        if (!running || !actx) return;
         const now = actx.currentTime;
         /* Polaris answers: a rose-colored chord */
-        [523.25, 659.25, 783.99, 987.77].forEach((f, i) => {
-          bell(f, now + i * 0.22, 0.06);
-        });
+        try {
+          [523.25, 659.25, 783.99, 987.77].forEach((f, i) => {
+            bell(f, now + i * 0.22, 0.06);
+          });
+        } catch (err) {
+          report('swell', err);
+        }
       }
     };
   })();
 
-  const musicBtn = document.getElementById('music-toggle');
   const musicNote = document.getElementById('music-note');
-  const musicLabel = musicBtn.querySelector('.mt-label');
+  const musicLabel = musicBtn && musicBtn.querySelector('.mt-label');
   let noteShown = false;
-  musicBtn.addEventListener('click', () => {
+  if (musicBtn) musicBtn.addEventListener('click', guard('music toggle', () => {
     const on = Music.toggle();
+    if (on === null) {
+      /* the failure has to reach the reader, not just the console */
+      musicBtn.classList.remove('playing');
+      musicBtn.setAttribute('aria-pressed', 'false');
+      musicBtn.setAttribute('aria-disabled', 'true');
+      if (musicLabel) musicLabel.textContent = 'The sky cannot sing here';
+      return;
+    }
     musicBtn.classList.toggle('playing', on);
     musicBtn.setAttribute('aria-pressed', on);
-    musicLabel.textContent = on ? 'The sky is singing' : 'Let the sky sing';
-    if (on && !noteShown) {
+    if (musicLabel) musicLabel.textContent = on ? 'The sky is singing' : 'Let the sky sing';
+    if (on && !noteShown && musicNote) {
       noteShown = true;
       musicNote.classList.add('show');
       setTimeout(() => musicNote.classList.remove('show'), 7000);
     }
-  });
+  }));
 
-  window.addEventListener('pointermove', e => {
+  window.addEventListener('pointermove', guard('hover', e => {
     const hit = hitTest(e.clientX, e.clientY);
     document.body.style.cursor = hit ? 'pointer' : '';
-  }, { passive: true });
+  }), { passive: true });
 
 })();
 </script>
