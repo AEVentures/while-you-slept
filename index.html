@@ -60,7 +60,9 @@
     text-transform: uppercase;
   }
 
-  /* text painted with a gradient, shared by the two display headings */
+  /* text painted with a gradient, shared by the two display headings.
+     Each heading sets background-image, not the background shorthand,
+     which would reset background-clip and leave the glyphs invisible. */
   h1, .secret-inner h3 {
     -webkit-background-clip: text;
     background-clip: text;
@@ -207,7 +209,7 @@
     font-size: clamp(3rem, 9vw, 6.4rem);
     letter-spacing: 0.06em;
     line-height: 1.05;
-    background: linear-gradient(160deg, #f6f1e4 20%, #e6c877 65%, #b98f3e 100%);
+    background-image: linear-gradient(160deg, #f6f1e4 20%, #e6c877 65%, #b98f3e 100%);
     opacity: 0;
     animation: fadeUp 2.6s ease 1.2s forwards;
   }
@@ -423,7 +425,7 @@
     font-size: clamp(1.9rem, 4vw, 2.6rem);
     line-height: 1.15;
     margin-bottom: 2rem;
-    background: linear-gradient(140deg, #f6f1e4 25%, var(--rose) 80%);
+    background-image: linear-gradient(140deg, #f6f1e4 25%, var(--rose) 80%);
   }
   .secret-inner p {
     line-height: 1.8;
